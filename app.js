@@ -31,42 +31,25 @@ async function procesarPDF(pdfData) {
     const pdf = await loadingTask.promise;
     const numPages = pdf.numPages;
     
-    updateProgress(10, `El PDF tiene ${numPages} páginas. Analizando...`);
+    updateProgress(10, `El PDF tiene ${numPages} páginas. Procesando...`);
     
-    // Detectar si el PDF tiene texto editable
-    let tieneTextoEditable = false;
+    // Variable para almacenar todo el texto
+    let todoElTexto = "";
     
-    // Revisar primera página para decidir
-    const primeraPagina = await pdf.getPage(1);
-    const contenidoTexto = await primeraPagina.getTextContent();
-    const textoPrimeraPagina = contenidoTexto.items.map(item => item.str).join(' ').trim();
-    
-    if (textoPrimeraPagina.length > 100) {
-      tieneTextoEditable = true;
-    }
-    
-    let metodoUsado = "";
-    
-    if (tieneTextoEditable) {
-      metodoUsado = "📝 TEXTO EDITABLE - Extrayendo directamente";
-      updateProgress(20, "Extrayendo texto del PDF...");
+    // Recorrer todas las páginas
+    for (let i = 1; i <= numPages; i++) {
+      updateProgress(10 + (i / numPages) * 80, `Procesando página ${i}/${numPages}...`);
       
-      for (let i = 1; i <= numPages; i++) {
-        const page = await pdf.getPage(i);
-        const textContent = await page.getTextContent();
-        const pageText = textContent.items.map(item => item.str).join(' ');
-        textoCompleto += `\n\n${"=".repeat(50)}\n📄 PÁGINA ${i}\n${"=".repeat(50)}\n${pageText}\n`;
-        updateProgress(20 + (i / numPages) * 70, `Leyendo página ${i}/${numPages}...`);
-      }
+      const page = await pdf.getPage(i);
       
-    } else {
-      metodoUsado = "🖼️ PDF ESCANEADO - Aplicando OCR (puede tardar)";
-      updateProgress(20, "Aplicando OCR a todas las páginas...");
+      // Intentar extraer texto directamente primero
+      const textContent = await page.getTextContent();
+      let textoPagina = textContent.items.map(item => item.str).join(' ').trim();
       
-      for (let i = 1; i <= numPages; i++) {
-        updateProgress(20 + (i / numPages) * 70, `OCR página ${i}/${numPages}...`);
+      // Si no hay texto o es muy poco, hacer OCR (es una imagen)
+      if (textoPagina.length < 50) {
+        updateProgress(10 + (i / numPages) * 80, `Página ${i}: aplicando OCR...`);
         
-        const page = await pdf.getPage(i);
         const viewport = page.getViewport({ scale: 2.0 });
         const canvas = document.createElement('canvas');
         const context = canvas.getContext('2d');
@@ -80,10 +63,9 @@ async function procesarPDF(pdfData) {
           'spa+eng',
           { logger: m => console.log(m) }
         );
+        textoPagina = text.trim() || "[No se pudo reconocer texto en esta página]";
         
-        textoCompleto += `\n\n${"=".repeat(50)}\n📄 PÁGINA ${i}\n${"=".repeat(50)}\n${text.trim() || "[Sin texto reconocible]"}\n`;
-        
-        // Mostrar preview
+        // Mostrar preview del texto
         const vistaDiv = document.getElementById('preview');
         const miniTexto = document.createElement('div');
         miniTexto.style.fontSize = '11px';
@@ -91,42 +73,54 @@ async function procesarPDF(pdfData) {
         miniTexto.style.padding = '8px';
         miniTexto.style.backgroundColor = '#e8f0fe';
         miniTexto.style.borderRadius = '5px';
-        miniTexto.innerHTML = `<strong>Página ${i}:</strong> ${text.substring(0, 100)}...`;
+        miniTexto.innerHTML = `<strong>Página ${i} (OCR):</strong> ${textoPagina.substring(0, 100)}...`;
+        vistaDiv.appendChild(miniTexto);
+      } else {
+        // Mostrar preview del texto directo
+        const vistaDiv = document.getElementById('preview');
+        const miniTexto = document.createElement('div');
+        miniTexto.style.fontSize = '11px';
+        miniTexto.style.margin = '5px';
+        miniTexto.style.padding = '8px';
+        miniTexto.style.backgroundColor = '#d4edda';
+        miniTexto.style.borderRadius = '5px';
+        miniTexto.innerHTML = `<strong>Página ${i} (texto):</strong> ${textoPagina.substring(0, 100)}...`;
         vistaDiv.appendChild(miniTexto);
       }
+      
+      todoElTexto += `\n\n${"=".repeat(60)}\n📄 PÁGINA ${i}\n${"=".repeat(60)}\n${textoPagina}\n`;
     }
     
-    updateProgress(95, "Generando archivo de texto...");
+    updateProgress(95, "Creando archivo de texto...");
     
-    // Crear el archivo TXT con todo el contenido
+    // Crear el archivo TXT
     const fecha = new Date().toLocaleString();
     const archivoFinal = `================================================================================
-📄 INFORME DE EXTRACCIÓN DE TEXTO
+📄 EXTRACCIÓN DE TEXTO COMPLETA
 ================================================================================
-📌 Archivo original: ${originalFileName}.pdf
+📌 Archivo: ${originalFileName}.pdf
 📅 Fecha: ${fecha}
-🔧 Método usado: ${metodoUsado}
 📊 Total páginas: ${numPages}
 ================================================================================
 
-${textoCompleto}
+${todoElTexto}
 
 ================================================================================
-FIN DEL DOCUMENTO
+FIN DEL DOCUMENTO - Texto extraído completamente
 ================================================================================`;
     
-    // Descargar como TXT
+    // Descargar como archivo de texto
     const blob = new Blob([archivoFinal], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${originalFileName}_TEXTO_COMPLETO.txt`;
+    a.download = `${originalFileName}_texto_completo.txt`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
     
-    updateProgress(100, `✅ ¡Completado! Se descargó "${originalFileName}_TEXTO_COMPLETO.txt"`);
+    updateProgress(100, `✅ ¡COMPLETADO! Se descargó "${originalFileName}_texto_completo.txt"`);
     document.getElementById('actions').classList.remove('hidden');
     
   } catch (error) {
@@ -144,7 +138,7 @@ function updateProgress(percent, message) {
 }
 
 document.getElementById('downloadBtn').addEventListener('click', () => {
-  alert("El archivo ya se descargó. Revisa tu carpeta de Descargas.");
+  alert("El archivo ya debería haberse descargado. Revisa tu carpeta de Descargas.\n\nSi no está, intenta nuevamente.");
 });
 
 document.getElementById('resetBtn').addEventListener('click', () => {
