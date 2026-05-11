@@ -1,5 +1,6 @@
-let pdfBytes = null;
+let pdfOriginal = null;
 let originalFileName = "";
+let textoCompleto = "";
 
 document.getElementById('pdfInput').addEventListener('change', async (e) => {
   const file = e.target.files[0];
@@ -10,11 +11,12 @@ document.getElementById('pdfInput').addEventListener('change', async (e) => {
   document.getElementById('progressContainer').classList.remove('hidden');
   document.getElementById('actions').classList.add('hidden');
   document.getElementById('preview').innerHTML = "";
+  textoCompleto = "";
   
   try {
     const arrayBuffer = await file.arrayBuffer();
-    pdfBytes = new Uint8Array(arrayBuffer);
-    await procesarPDF(pdfBytes);
+    pdfOriginal = new Uint8Array(arrayBuffer);
+    await procesarPDF(pdfOriginal);
   } catch (error) {
     alert('Error: ' + error.message);
     console.error(error);
@@ -33,12 +35,10 @@ async function procesarPDF(pdfData) {
     
     updateProgress(10, `Analizando ${numPages} páginas...`);
     
-    // PRIMERO: Detectar si el PDF tiene texto editable
     let tieneTextoEditable = false;
-    let textoExtraidoTotal = "";
     let paginasSinTexto = [];
     
-    // Revisar primeras 3 páginas para decidir
+    // Revisar primeras 3 páginas
     const paginasRevisar = Math.min(3, numPages);
     
     for (let i = 1; i <= paginasRevisar; i++) {
@@ -46,66 +46,58 @@ async function procesarPDF(pdfData) {
       const textContent = await page.getTextContent();
       const pageText = textContent.items.map(item => item.str).join(' ').trim();
       
-      if (pageText.length > 50) { // Tiene texto significativo
+      if (pageText.length > 50) {
         tieneTextoEditable = true;
-        textoExtraidoTotal += `\n\n--- PÁGINA ${i} ---\n${pageText}\n`;
+        textoCompleto += `\n\n--- PÁGINA ${i} ---\n${pageText}\n`;
       } else {
         paginasSinTexto.push(i);
       }
     }
     
     let metodoUsado = "";
-    let textoFinal = "";
     
     if (tieneTextoEditable && paginasSinTexto.length === 0) {
-      // CASO 1: Todo el PDF tiene texto editable
       metodoUsado = "📝 TEXTO EDITABLE DETECTADO";
-      updateProgress(30, "Extrayendo texto directamente (rápido)...");
+      updateProgress(30, "Extrayendo texto directamente...");
       
-      // Extraer texto de todas las páginas
       for (let i = 1; i <= numPages; i++) {
         const page = await pdf.getPage(i);
         const textContent = await page.getTextContent();
         const pageText = textContent.items.map(item => item.str).join(' ');
-        textoFinal += `\n\n========== PÁGINA ${i} ==========\n${pageText}\n`;
+        textoCompleto += `\n\n========== PÁGINA ${i} ==========\n${pageText}\n`;
         updateProgress(30 + (i / numPages) * 60, `Extrayendo página ${i}/${numPages}...`);
       }
       
     } else if (tieneTextoEditable && paginasSinTexto.length > 0) {
-      // CASO 2: PDF MIXTO (algunas páginas con texto, otras son imágenes)
-      metodoUsado = "🔄 PDF MIXTO (texto + imágenes) - Aplicando OCR donde sea necesario";
-      updateProgress(30, "PDF mixto detectado. Procesando...");
+      metodoUsado = "🔄 PDF MIXTO (texto + imágenes)";
+      updateProgress(30, "Procesando PDF mixto...");
       
-      // Procesar todas las páginas
       for (let i = 1; i <= numPages; i++) {
         const page = await pdf.getPage(i);
         const textContent = await page.getTextContent();
         const pageText = textContent.items.map(item => item.str).join(' ').trim();
         
         if (pageText.length > 50) {
-          // Esta página tiene texto editable
-          textoFinal += `\n\n========== PÁGINA ${i} (texto) ==========\n${pageText}\n`;
+          textoCompleto += `\n\n========== PÁGINA ${i} (texto) ==========\n${pageText}\n`;
           updateProgress(30 + (i / numPages) * 60, `Página ${i}: extrayendo texto...`);
         } else {
-          // Esta página necesita OCR
-          updateProgress(30 + (i / numPages) * 60, `Página ${i}: aplicando OCR (imagen)...`);
+          updateProgress(30 + (i / numPages) * 60, `Página ${i}: aplicando OCR...`);
           const textoOCR = await aplicarOCRAPagina(page);
-          textoFinal += `\n\n========== PÁGINA ${i} (OCR) ==========\n${textoOCR}\n`;
+          textoCompleto += `\n\n========== PÁGINA ${i} (OCR) ==========\n${textoOCR}\n`;
         }
       }
       
     } else {
-      // CASO 3: TODO el PDF son imágenes/escaneos
       metodoUsado = "🖼️ PDF ESCANEADO - Aplicando OCR completo";
-      updateProgress(30, "PDF sin texto editable detectado. Aplicando OCR a todas las páginas...");
+      updateProgress(30, "Aplicando OCR a todas las páginas...");
       
       for (let i = 1; i <= numPages; i++) {
-        updateProgress(30 + (i / numPages) * 60, `Aplicando OCR a página ${i}/${numPages} (esto puede tardar)...`);
+        updateProgress(30 + (i / numPages) * 60, `Página ${i}/${numPages} - OCR en progreso...`);
         const page = await pdf.getPage(i);
         const textoOCR = await aplicarOCRAPagina(page);
-        textoFinal += `\n\n========== PÁGINA ${i} ==========\n${textoOCR}\n`;
+        textoCompleto += `\n\n========== PÁGINA ${i} ==========\n${textoOCR}\n`;
         
-        // Mostrar vista previa
+        // Mostrar preview
         const vistaDiv = document.getElementById('preview');
         const miniTexto = document.createElement('div');
         miniTexto.style.fontSize = '11px';
@@ -118,18 +110,17 @@ async function procesarPDF(pdfData) {
       }
     }
     
-    updateProgress(95, "Generando PDF con el texto extraído...");
-    await generarPDFConTexto(pdfData, textoFinal, metodoUsado);
+    updateProgress(95, "Creando PDF con el texto extraído...");
+    await crearPDFConSoloTexto(textoCompleto, metodoUsado);
     
   } catch (error) {
     console.error(error);
-    alert("Error: " + error.message + "\n\nSi el PDF es muy grande, intenta con menos páginas.");
+    alert("Error: " + error.message);
     document.getElementById('progressContainer').classList.add('hidden');
   }
 }
 
 async function aplicarOCRAPagina(page) {
-  // Convertir página a imagen
   const viewport = page.getViewport({ scale: 2.0 });
   const canvas = document.createElement('canvas');
   const context = canvas.getContext('2d');
@@ -138,104 +129,115 @@ async function aplicarOCRAPagina(page) {
   
   await page.render({ canvasContext: context, viewport }).promise;
   
-  // Aplicar OCR
   const { data: { text } } = await Tesseract.recognize(
     canvas.toDataURL('image/png'),
     'spa+eng',
-    {
-      logger: m => console.log(m),
-    }
+    { logger: m => console.log(m) }
   );
   
   return text.trim() || "[Página sin texto reconocible]";
 }
 
-async function generarPDFConTexto(originalPdfBytes, textoExtraido, metodo) {
+async function crearPDFConSoloTexto(texto, metodo) {
   try {
-    const pdfDoc = await PDFLib.PDFDocument.load(originalPdfBytes);
+    // Crear un PDF NUEVO completamente desde cero
+    const pdfDoc = await PDFLib.PDFDocument.create();
     
-    // Crear página de resumen
-    const resumenPage = pdfDoc.addPage([600, 800]);
-    let y = 750;
+    // Página de título/informe
+    const coverPage = pdfDoc.addPage([500, 700]);
+    let y = 650;
     
-    resumenPage.drawText("📄 INFORME DE EXTRACCIÓN DE TEXTO", {
+    coverPage.drawText("📄 INFORME DE EXTRACCIÓN DE TEXTO", {
       x: 50,
       y: y,
-      size: 16,
+      size: 14,
       color: PDFLib.rgb(0, 0.3, 0.8)
     });
     
     y -= 30;
     
-    resumenPage.drawText(metodo, {
+    coverPage.drawText(metodo, {
       x: 50,
       y: y,
-      size: 12,
+      size: 11,
       color: PDFLib.rgb(0, 0.5, 0)
     });
     
     y -= 30;
     
-    resumenPage.drawText(`Documento: ${originalFileName}`, {
+    coverPage.drawText(`Documento original: ${originalFileName}.pdf`, {
       x: 50,
       y: y,
-      size: 10,
+      size: 9,
       color: PDFLib.rgb(0.3, 0.3, 0.3)
     });
     
     y -= 40;
     
-    resumenPage.drawText("🔽 TEXTO EXTRAÍDO 🔽", {
+    coverPage.drawText("🔽 TEXTO EXTRAÍDO 🔽", {
       x: 50,
       y: y,
-      size: 14,
+      size: 12,
       color: PDFLib.rgb(0.8, 0.4, 0)
     });
     
-    y -= 25;
+    y -= 30;
     
-    // Añadir el texto extraído
-    const lines = textoExtraido.split('\n');
+    // Dividir el texto en páginas
+    const lines = texto.split('\n');
+    let currentPage = coverPage;
     let currentY = y;
-    let paginaActual = resumenPage;
     
     for (let line of lines) {
       if (currentY < 50) {
-        // Crear nueva página
-        const nuevaPagina = pdfDoc.addPage([600, 800]);
-        paginaActual = nuevaPagina;
-        currentY = 750;
+        currentPage = pdfDoc.addPage([500, 700]);
+        currentY = 650;
       }
       
-      const shortLine = line.length > 100 ? line.substring(0, 97) + "..." : line;
+      const shortLine = line.length > 90 ? line.substring(0, 87) + "..." : line;
       
-      paginaActual.drawText(shortLine, {
-        x: 50,
-        y: currentY,
-        size: 9,
-        color: PDFLib.rgb(0, 0, 0)
-      });
+      try {
+        currentPage.drawText(shortLine, {
+          x: 50,
+          y: currentY,
+          size: 9,
+          color: PDFLib.rgb(0, 0, 0)
+        });
+      } catch (e) {
+        // Ignorar errores de caracteres especiales
+      }
       
       currentY -= 12;
     }
     
-    const pdfBytesFinal = await pdfDoc.save();
-    pdfBytes = pdfBytesFinal;
-    
-    let mensajeFinal = "✅ ¡Proceso completado! ";
-    if (metodo.includes("TEXTO EDITABLE")) {
-      mensajeFinal += "Se extrajo el texto directamente del PDF.";
-    } else if (metodo.includes("MIXTO")) {
-      mensajeFinal += "Se combinó texto editable con OCR para las páginas escaneadas.";
-    } else {
-      mensajeFinal += "Se aplicó OCR completo al PDF escaneado.";
+    // Si no hay nada en el texto, mostrar mensaje
+    if (texto.trim().length === 0) {
+      currentPage.drawText("No se pudo extraer texto de este PDF.", {
+        x: 50,
+        y: currentY,
+        size: 11,
+        color: PDFLib.rgb(1, 0, 0)
+      });
     }
     
-    updateProgress(100, mensajeFinal);
+    const pdfBytesFinal = await pdfDoc.save();
+    
+    // Descargar automáticamente
+    const blob = new Blob([pdfBytesFinal], { type: 'application/pdf' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${originalFileName}_TEXTO_EXTRAIDO.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    
+    updateProgress(100, "✅ ¡Completado! Se descargó automáticamente el PDF con el texto extraído.");
     document.getElementById('actions').classList.remove('hidden');
     
   } catch (error) {
-    throw new Error("Error al generar PDF: " + error.message);
+    throw new Error("Error al crear PDF: " + error.message);
   }
 }
 
@@ -247,16 +249,7 @@ function updateProgress(percent, message) {
 }
 
 document.getElementById('downloadBtn').addEventListener('click', () => {
-  if (!pdfBytes) return;
-  const blob = new Blob([pdfBytes], { type: 'application/pdf' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `${originalFileName}_TEXTO_COMPLETO.pdf`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  alert("El PDF ya se descargó automáticamente al finalizar el proceso.\n\nSi no lo ves, revisa tu carpeta de Descargas.");
 });
 
 document.getElementById('resetBtn').addEventListener('click', () => {
