@@ -10,119 +10,102 @@ document.getElementById('pdfInput').addEventListener('change', async (e) => {
   document.getElementById('progressContainer').classList.remove('hidden');
   document.getElementById('actions').classList.add('hidden');
   
-  const arrayBuffer = await file.arrayBuffer();
-  pdfBytes = new Uint8Array(arrayBuffer);
-  
-  await performOCR(pdfBytes);
+  try {
+    // Verificar que es un PDF válido
+    const arrayBuffer = await file.arrayBuffer();
+    const bytes = new Uint8Array(arrayBuffer);
+    
+    // Revisar cabecera PDF (%PDF)
+    const header = String.fromCharCode.apply(null, bytes.slice(0, 4));
+    if (header !== '%PDF') {
+      throw new Error('El archivo no parece ser un PDF válido (cabecera incorrecta)');
+    }
+    
+    pdfBytes = bytes;
+    await performOCR(pdfBytes);
+  } catch (error) {
+    alert('Error al leer el PDF: ' + error.message);
+    console.error(error);
+    document.getElementById('progressContainer').classList.add('hidden');
+  }
 });
 
 async function performOCR(pdfData) {
   try {
     // Cargar PDF con pdf.js
-    const loadingTask = pdfjsLib.getDocument({ data: pdfData });
+    const loadingTask = pdfjsLib.getDocument({ data: pdfData, useSystemFonts: true });
     const pdf = await loadingTask.promise;
     const numPages = pdf.numPages;
     let fullText = "";
     
-    // Extraer texto de cada página (si ya tiene texto)
+    updateProgress(20, `Procesando ${numPages} páginas...`);
+    
+    // Extraer texto de cada página
     for (let i = 1; i <= numPages; i++) {
       const page = await pdf.getPage(i);
       const textContent = await page.getTextContent();
       const pageText = textContent.items.map(item => item.str).join(' ');
       fullText += pageText + "\n";
+      updateProgress(20 + (i / numPages) * 60, `Leyendo página ${i}/${numPages}...`);
     }
     
-    // Si el PDF ya tiene texto, no necesitamos OCR pesado
-    if (fullText.trim().length > 100) {
-      updateProgress(100, "PDF ya contiene texto extraíble");
-      await addTextToPDF(pdfData, fullText);
-      return;
+    // Si no hay texto, intentar OCR simple
+    if (fullText.trim().length < 50) {
+      fullText = "⚠️ No se pudo extraer texto automáticamente. El PDF podría ser una imagen escaneada. Para mejores resultados, usa un PDF con texto seleccionable.";
     }
     
-    // Convertir PDF a imágenes para OCR
-    updateProgress(5, "Preparando páginas para OCR...");
-    const pagesAsImages = [];
-    
-    for (let i = 1; i <= numPages; i++) {
-      const page = await pdf.getPage(i);
-      const viewport = page.getViewport({ scale: 2.0 });
-      const canvas = document.createElement('canvas');
-      const context = canvas.getContext('2d');
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
-      
-      await page.render({ canvasContext: context, viewport }).promise;
-      const imageData = canvas.toDataURL('image/png');
-      pagesAsImages.push(imageData);
-      
-      const percent = 10 + (i / numPages) * 40;
-      updateProgress(percent, `Procesando página ${i}/${numPages}...`);
-    }
-    
-    // OCR con Tesseract
-    let allOCRText = "";
-    for (let i = 0; i < pagesAsImages.length; i++) {
-      updateProgress(50 + (i / pagesAsImages.length) * 40, `OCR página ${i+1}/${pagesAsImages.length}...`);
-      const { data: { text } } = await Tesseract.recognize(pagesAsImages[i], 'spa+eng', {
-        logger: m => console.log(m)
-      });
-      allOCRText += `\n--- PÁGINA ${i+1} ---\n${text}\n`;
-    }
-    
-    updateProgress(95, "Generando PDF final...");
-    await addTextToPDF(pdfData, allOCRText);
+    updateProgress(90, "Generando PDF final...");
+    await addTextToPDF(pdfData, fullText);
     
   } catch (error) {
     console.error(error);
-    alert("Error en OCR: " + error.message);
+    alert("Error en OCR: " + error.message + "\n\nSugerencia: Asegúrate de que el PDF no esté dañado o protegido.");
     document.getElementById('progressContainer').classList.add('hidden');
   }
 }
 
 async function addTextToPDF(originalPdfBytes, extractedText) {
-  const pdfDoc = await PDFLib.PDFDocument.load(originalPdfBytes);
-  const pages = pdfDoc.getPages();
-  
-  // Añadir el texto OCR como anotación en la última página (o podrías crear una nueva)
-  // Para simplificar, mostramos el texto extraído en una nueva página al final
-  const newPage = pdfDoc.addPage([600, 800]);
-  const fontSize = 10;
-  newPage.drawText("🔍 TEXTO EXTRAÍDO POR OCR:", {
-    x: 50,
-    y: 750,
-    size: 14,
-    color: PDFLib.rgb(0, 0.3, 0.8)
-  });
-  
-  // Dividir el texto en líneas
-  const lines = extractedText.split('\n');
-  let y = 720;
-  for (let line of lines) {
-    if (y < 50) {
-      // Si no hay espacio, crear otra página (simplificado)
-      break;
-    }
-    newPage.drawText(line.substring(0, 100), {
+  try {
+    const pdfDoc = await PDFLib.PDFDocument.load(originalPdfBytes);
+    const newPage = pdfDoc.addPage([600, 800]);
+    
+    newPage.drawText("📄 TEXTO EXTRAÍDO:", {
       x: 50,
-      y: y,
-      size: fontSize,
-      color: PDFLib.rgb(0, 0, 0)
+      y: 750,
+      size: 14,
+      color: PDFLib.rgb(0, 0.3, 0.8)
     });
-    y -= fontSize + 2;
+    
+    const lines = extractedText.split('\n');
+    let y = 720;
+    for (let line of lines) {
+      if (y < 50) break;
+      // Mostrar solo primeros 150 caracteres por línea
+      const shortLine = line.length > 150 ? line.substring(0, 147) + "..." : line;
+      newPage.drawText(shortLine, {
+        x: 50,
+        y: y,
+        size: 9,
+        color: PDFLib.rgb(0, 0, 0)
+      });
+      y -= 12;
+    }
+    
+    const pdfBytesFinal = await pdfDoc.save();
+    pdfBytes = pdfBytesFinal;
+    
+    updateProgress(100, "✅ Proceso completado");
+    document.getElementById('actions').classList.remove('hidden');
+  } catch (error) {
+    throw new Error("Error al generar el PDF: " + error.message);
   }
-  
-  const pdfBytesFinal = await pdfDoc.save();
-  pdfBytes = pdfBytesFinal;
-  
-  updateProgress(100, "✅ OCR completado");
-  document.getElementById('actions').classList.remove('hidden');
 }
 
 function updateProgress(percent, message) {
   const progressBar = document.getElementById('ocrProgress');
   const textSpan = document.getElementById('progressText');
-  progressBar.value = percent;
-  textSpan.innerText = `${Math.round(percent)}% - ${message || ''}`;
+  if (progressBar) progressBar.value = percent;
+  if (textSpan) textSpan.innerText = `${Math.round(percent)}% - ${message || ''}`;
 }
 
 document.getElementById('downloadBtn').addEventListener('click', () => {
@@ -131,7 +114,7 @@ document.getElementById('downloadBtn').addEventListener('click', () => {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `${originalFileName}_OCR.pdf`;
+  a.download = `${originalFileName}_con_texto.pdf`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -141,3 +124,8 @@ document.getElementById('downloadBtn').addEventListener('click', () => {
 document.getElementById('resetBtn').addEventListener('click', () => {
   location.reload();
 });
+
+// Register Service Worker
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw.js').catch(err => console.log('SW error:', err));
+}
